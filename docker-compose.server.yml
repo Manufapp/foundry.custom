@@ -1,0 +1,126 @@
+name: manufapp
+
+# Runs pulled images (never builds) - django, celery, celery-beat, redis, and react, all
+# pulled from AWS ECR. No Postgres service here - the target server already has it
+# installed on bare metal; point DB_HOST at wherever that is (host.docker.internal by
+# default, via the extra_hosts entries below).
+#
+# One-time prerequisite on that Postgres, before the first `up` - a fresh install doesn't
+# have this extension, and one migration (core.0002_auto_20260625_0555) needs it for a GIN
+# trigram index. Without it migrate fails with: operator class "gin_trgm_ops" does not exist.
+#   psql -U <DB_USER> -d <DB_NAME> -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+#
+# Usage:
+#   cp .env.server.example .env.server   # then fill in real values, never commit it
+#   aws ecr get-login-password --region ${AWS_REGION:-ap-south-1} | \
+#     docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com
+#   docker compose --env-file .env.server -f docker-compose.server.yml pull
+#   docker compose --env-file .env.server -f docker-compose.server.yml up -d
+
+x-django-image: &django-image
+  image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.django:${IMAGE_TAG:-latest}
+
+x-django-env: &django-env
+  ENV_NAME: ${ENV_NAME:-production}
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+  DB_HOST: ${DB_HOST:-host.docker.internal}
+  DB_NAME: ${DB_NAME:-manufapp}
+  DB_USER: ${DB_USER:-caretaker}
+  DB_PASSWORD: ${DB_PASSWORD}
+  DB_PORT: ${DB_PORT:-5432}
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/0
+  PYTHONUNBUFFERED: 1
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: manufapp-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  django:
+    <<: *django-image
+    container_name: manufapp-django
+    restart: unless-stopped
+    environment:
+      <<: *django-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    # ASGI (uvicorn), not gunicorn/WSGI - foundry/asgi.py wires up Django Channels for
+    # websockets (core/routing.py); gunicorn would silently drop websocket support.
+    command:
+      [
+        "sh",
+        "-c",
+        "python manage.py migrate && uvicorn foundry.asgi:application --host 0.0.0.0 --port 8000",
+      ]
+    # Lets celery/celery-beat wait for migrate to actually finish - on a fresh DB, celery-beat
+    # connecting before django_celery_beat's tables exist crashes once (self-heals via
+    # restart: unless-stopped, but this avoids the race and the noisy log entirely).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+  celery:
+    <<: *django-image
+    container_name: manufapp-celery
+    restart: unless-stopped
+    environment:
+      <<: *django-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_healthy
+    command: ["celery", "-A", "foundry", "worker", "-l", "info"]
+
+  celery-beat:
+    <<: *django-image
+    container_name: manufapp-celery-beat
+    restart: unless-stopped
+    environment:
+      <<: *django-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_healthy
+    command: ["celery", "-A", "foundry", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
+
+  react:
+    image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.react:${IMAGE_TAG:-latest}
+    container_name: manufapp-react
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - django
+    command: ["npm", "start"]
+
+volumes:
+  redis_data:

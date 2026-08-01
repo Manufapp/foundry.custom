@@ -19,32 +19,39 @@ containerized — it's expected to already be running on the host's bare metal.
 
 1. **Docker + Docker Compose** on the target host.
 2. **AWS CLI configured** with ECR pull access (`aws sts get-caller-identity` should work) — needed to `docker login` to ECR before pulling images.
-
-   On a fresh Ubuntu server missing either of these, `./manufapp.sh setup` installs
-   Docker Engine + the Compose plugin and AWS CLI v2 (skips anything already
-   installed, uses `sudo` automatically unless already running as root):
-   ```bash
-   ./manufapp.sh setup
-   aws configure   # if ECR-capable credentials aren't already set up
-   ```
 3. **PostgreSQL already running on the host**, reachable from containers via
    `host.docker.internal` (wired up via `extra_hosts: host-gateway` in the compose
-   file — no extra config needed on modern Docker).
-   - The database and role referenced by `DB_NAME`/`DB_USER`/`DB_PASSWORD` must
-     already exist.
-   - **One-time extension**, before the first `migrate` — a fresh Postgres install
-     doesn't have this, and migration `core.0002_auto_20260625_0555` needs it for a
-     GIN trigram index (fails with `operator class "gin_trgm_ops" does not exist`
-     otherwise):
-     ```bash
-     psql -U <DB_USER> -d <DB_NAME> -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-     ```
-   - **Postgres must accept connections from the Docker bridge network**, not just
-     `localhost` — a default install only listens on `localhost` and only trusts
-     `127.0.0.1` in `pg_hba.conf`. Set `listen_addresses = '*'` in `postgresql.conf`,
-     add a `pg_hba.conf` entry allowing the Docker bridge subnet (`md5`/`scram`
-     auth), then **restart** Postgres (`listen_addresses` needs a full restart, not
-     just `reload`).
+   file — no extra config needed on modern Docker), with the `DB_NAME`/`DB_USER`
+   role+database created, `pg_trgm` enabled, and listening on the Docker bridge
+   network (not just `localhost`).
+
+On a fresh Ubuntu server missing any of the above, `./manufapp.sh setup` handles all
+of it — skips anything already installed/configured, uses `sudo` automatically
+unless already running as root:
+
+```bash
+./manufapp.sh setup
+```
+
+Specifically, `setup`:
+- Installs Docker Engine + the Compose plugin, and AWS CLI v2, if missing.
+- Runs `aws configure` (interactive) if `aws sts get-caller-identity` doesn't
+  already succeed — skipped if credentials are already set up.
+- Installs PostgreSQL, if missing (`psql` not already on `PATH`).
+- Creates the `DB_USER` role and `DB_NAME` database (reading both from
+  `.env.server` if it already exists, else defaulting to `caretaker`/`manufapp` —
+  the same defaults `docker-compose.server.yml` itself falls back to), and sets
+  `DB_USER`'s password to `DB_PASSWORD` (or `caretaker` if unset).
+- Enables the `pg_trgm` extension on that database — needed for a GIN trigram
+  index (`core.0002_auto_20260625_0555`); without it, `migrate` fails with
+  `operator class "gin_trgm_ops" does not exist`.
+- Sets `listen_addresses = '*'` in `postgresql.conf` and adds a `pg_hba.conf`
+  entry for `172.16.0.0/12` (Docker's default bridge allocation range) if not
+  already present, then restarts Postgres (`listen_addresses` needs a full
+  restart, not just a `reload`, to take effect).
+
+Run `./manufapp.sh setup` again any time — every step is idempotent (checked and
+skipped if already done).
 
 ## Setup
 
@@ -57,12 +64,10 @@ Key variables in `.env.server`:
 | Variable | Purpose |
 |---|---|
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | ECR account/region images are pulled from. |
-| `IMAGE_TAG_FE` | `foundry.react` image tag (e.g. `1.39.0`). |
-| `IMAGE_TAG_BE` | `foundry.django` image tag, **including any `v` prefix** it was actually pushed with (e.g. `v1.39.0`) — the compose file uses this value as-is, it does not add a prefix. |
 | `ENV_NAME` | `local` \| `dev` \| `production` — controls Django settings branching (`foundry/settings.py`). **This matters a lot here — see the warning below.** |
 | `DJANGO_SECRET_KEY` | Must match what the image was built expecting. |
 | `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_PORT` | Bare-metal Postgres connection info. |
-| `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_DEFAULT_REGION` | Only needed if this environment uses S3 (documents, audit logs, etc.) — leave blank to skip. These are passed to the django container directly as env vars; **do not** also set `AWS_PROFILE` in the container's environment — there's no `~/.aws/credentials` mounted inside it, so boto3 will fail with `ProfileNotFound` even though the access key/secret alone are sufficient. (A host-level `AWS_PROFILE` in your own shell, used for the `aws ecr get-login-password` step, is unrelated and fine.) |
+| `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_DEFAULT_REGION`/`AWS_PROFILE` | Only needed if this environment uses S3 (documents, audit logs, etc.). The compose file mounts the host's `~/.aws` read-only into `django`/`celery`/`celery-beat` and points `AWS_SHARED_CREDENTIALS_FILE`/`AWS_CONFIG_FILE` at it, so **the profile from `./manufapp.sh setup`'s `aws configure` step (or one you ran yourself) is used automatically** — leave the keys blank and, if needed, set only `AWS_PROFILE` (defaults to `default`) to pick a non-default named profile. Set `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` explicitly only if this container needs a *different* identity than the host's own profile — they take priority over the mounted one when set. |
 
 > **`ENV_NAME=production` warning:** `foundry/settings.py` ties `SECURE_SSL_REDIRECT`
 > (and `SESSION_COOKIE_SECURE`/`CSRF_COOKIE_SECURE`) directly to `DEBUG=False`, which
@@ -74,6 +79,16 @@ Key variables in `.env.server`:
 > nothing will serve it — the app becomes completely unreachable, and the `django`
 > health check will never pass. Use `ENV_NAME=local` for testing on a box without TLS
 > in front; only use `production` once real TLS termination exists somewhere upstream.
+
+`IMAGE_TAG_FE`/`IMAGE_TAG_BE` are **not** set in `.env.server` — they're required
+env vars passed on the command line to `./manufapp.sh start`/`restart`, e.g.:
+```bash
+IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh start
+```
+so the image versions actually running are always an explicit, visible part of the
+command rather than buried in a file. Note `IMAGE_TAG_BE` needs **any `v` prefix it
+was actually pushed with** (e.g. `v1.39.0`) — the compose file uses the value as-is,
+it does not add a prefix.
 
 ## Why nginx
 
@@ -98,11 +113,14 @@ Use `manufapp.sh`, or the raw `docker compose` commands it wraps.
 ### manufapp.sh
 
 ```bash
-./manufapp.sh setup     # Ubuntu only - install Docker + AWS CLI v2 if missing
-./manufapp.sh start     # aws ecr login, pull latest images, up -d, then show status
-./manufapp.sh stop      # docker compose down
-./manufapp.sh restart   # stop, then start
-./manufapp.sh status    # docker compose ps
+./manufapp.sh setup      # Ubuntu only - install/configure Docker, AWS CLI v2, Postgres
+
+# start/restart need IMAGE_TAG_FE/IMAGE_TAG_BE as env vars - not read from .env.server
+IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh start     # aws ecr login, pull those image tags, up -d, then show status
+IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then start with those tags
+
+./manufapp.sh stop       # docker compose down
+./manufapp.sh status     # docker compose ps
 ./manufapp.sh logs [service...]   # follow logs — all services, or just the ones named
                                    # e.g. ./manufapp.sh logs django celery
 ```
@@ -113,6 +131,7 @@ Use `manufapp.sh`, or the raw `docker compose` commands it wraps.
 aws ecr get-login-password --region ${AWS_REGION:-ap-south-1} | \
   docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com
 
+export IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0   # required - not read from .env.server
 docker compose --env-file .env.server -f docker-compose.server.yml pull
 docker compose --env-file .env.server -f docker-compose.server.yml up -d
 docker compose --env-file .env.server -f docker-compose.server.yml ps
@@ -128,8 +147,9 @@ docker compose --env-file .env.server -f docker-compose.server.yml down
   `interval: 5s` ≈ 5 minute budget) may time out on an unusually slow first boot,
   which stops `celery`/`celery-beat` from starting since they wait on
   `django: condition: service_healthy`. If that happens, just re-run
-  `./manufapp.sh start` (or `docker compose ... up -d`) once `django` shows healthy
-  in `docker ps` — Compose will bring up the remaining services without re-pulling.
+  `IMAGE_TAG_FE=... IMAGE_TAG_BE=... ./manufapp.sh start` (or `docker compose ... up -d`)
+  once `django` shows healthy in `docker ps` — Compose will bring up the remaining
+  services without re-pulling.
 - **`celery-beat` catches up on missed schedules.** Any periodic task that was due
   while the stack was down fires immediately on the next `celery-beat` start. If any
   of those are `sendmail`/report tasks pointed at real recipients, expect a burst of

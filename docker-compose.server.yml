@@ -18,6 +18,10 @@ name: manufapp
 #   docker compose --env-file .env.server -f docker-compose.server.yml up -d
 
 x-django-image: &django-image
+  # No default that matters in practice - IMAGE_TAG_BE is enforced as mandatory by
+  # manufapp.sh's start/restart (the only commands that actually pull/run this image);
+  # `latest` here is just a parseable placeholder so stop/status/logs (which also
+  # interpolate this file but never pull) don't need it set.
   image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.django:${IMAGE_TAG_BE:-latest}
 
 x-django-env: &django-env
@@ -31,9 +35,23 @@ x-django-env: &django-env
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/0
   PYTHONUNBUFFERED: 1
+  # Explicit keys still win if set (boto3's credential chain checks env vars before the
+  # shared credentials file) - leave blank to fall back to the host's `aws configure`
+  # profile, mounted read-only below via *aws-creds-volume.
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
   AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+  AWS_PROFILE: ${AWS_PROFILE:-default}
+  AWS_SHARED_CREDENTIALS_FILE: /aws-creds/credentials
+  AWS_CONFIG_FILE: /aws-creds/config
+
+# The host's ~/.aws (populated by `./manufapp.sh setup`'s `aws configure` step) mounted
+# read-only, so boto3 in the container can use that profile without AWS_ACCESS_KEY_ID/
+# AWS_SECRET_ACCESS_KEY ever needing to live in .env.server. AWS_SHARED_CREDENTIALS_FILE/
+# AWS_CONFIG_FILE above point at the mounted path explicitly, since the container's HOME
+# won't match the host's and boto3 otherwise looks under $HOME/.aws.
+x-aws-creds-volume: &aws-creds-volume
+  - ${HOME}/.aws:/aws-creds:ro
 
 services:
   redis:
@@ -54,6 +72,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *django-env
+    volumes: *aws-creds-volume
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -85,6 +104,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *django-env
+    volumes: *aws-creds-volume
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -100,6 +120,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *django-env
+    volumes: *aws-creds-volume
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -110,6 +131,7 @@ services:
     command: ["celery", "-A", "foundry", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
 
   react:
+    # Same reasoning as IMAGE_TAG_BE above - mandatory-ness is enforced by manufapp.sh.
     image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.react:${IMAGE_TAG_FE:-latest}
     container_name: manufapp-react
     restart: unless-stopped

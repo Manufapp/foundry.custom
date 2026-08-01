@@ -356,6 +356,23 @@ ensure_local_postgres() {
   $PG_PSQL -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" >/dev/null
 }
 
+# nginx is the single entry point (port 80, see README "Why nginx") - print what to
+# actually type into a browser instead of leaving that as a guess after `up -d`.
+print_access_urls() {
+  echo
+  echo "App is served through nginx on port 80. Access it at:"
+  local local_ip public_ip
+  local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [ -n "$local_ip" ] && echo "  http://$local_ip   (same network/VPN as this server)"
+  # Best-effort only - times out fast and is silently skipped if this box has no
+  # internet egress or the lookup service is unreachable.
+  public_ip=$(curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || true)
+  if [ -n "$public_ip" ] && [ "$public_ip" != "$local_ip" ]; then
+    echo "  http://$public_ip   (public internet - only reachable if this host's firewall/router forwards port 80 to it)"
+  fi
+  echo "  (or any hostname/DNS record you've pointed at this server)"
+}
+
 case "$cmd" in
   start)
     if [ -z "${IMAGE_TAG_FE:-}" ] || [ -z "${IMAGE_TAG_BE:-}" ]; then
@@ -369,6 +386,7 @@ case "$cmd" in
     "${COMPOSE[@]}" pull
     "${COMPOSE[@]}" up -d
     "${COMPOSE[@]}" ps
+    print_access_urls
     ;;
   stop)
     "${COMPOSE[@]}" down

@@ -124,7 +124,10 @@ app on react's own port (`:3000`) sends those API calls to Next.js itself, which
 `nginx/nginx.conf` is that router: it listens on `:80` and forwards `/api/*` and
 `/ws/*` (Django Channels websocket routes — see `core/routing.py`) to `django:8000`,
 and everything else to `react:3000`. **Access the app at `http://localhost` (or the
-server's hostname), not `:3000` directly.**
+server's hostname), not `:3000` directly.** `./manufapp.sh start` prints the local
+network IP (and, best-effort, this host's public IP) to hit at the end, so you don't
+have to go look it up separately — the public one is only actually reachable if this
+host's firewall/router forwards port `80` to it.
 
 ## Running it
 
@@ -136,7 +139,7 @@ Use `manufapp.sh`, or the raw `docker compose` commands it wraps.
 ./manufapp.sh setup      # Ubuntu only - install/configure Docker, AWS CLI v2, Postgres
 
 # start/restart need IMAGE_TAG_FE/IMAGE_TAG_BE as env vars - not read from .env.server
-IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh start     # aws ecr login, pull those image tags, up -d, then show status
+IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh start     # aws ecr login, pull those image tags, up -d, then show status + access URL(s)
 IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then start with those tags
 
 ./manufapp.sh stop       # docker compose down

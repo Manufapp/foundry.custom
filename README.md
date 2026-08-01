@@ -19,6 +19,14 @@ containerized — it's expected to already be running on the host's bare metal.
 
 1. **Docker + Docker Compose** on the target host.
 2. **AWS CLI configured** with ECR pull access (`aws sts get-caller-identity` should work) — needed to `docker login` to ECR before pulling images.
+
+   On a fresh Ubuntu server missing either of these, `./manufapp.sh setup` installs
+   Docker Engine + the Compose plugin and AWS CLI v2 (skips anything already
+   installed, uses `sudo` automatically unless already running as root):
+   ```bash
+   ./manufapp.sh setup
+   aws configure   # if ECR-capable credentials aren't already set up
+   ```
 3. **PostgreSQL already running on the host**, reachable from containers via
    `host.docker.internal` (wired up via `extra_hosts: host-gateway` in the compose
    file — no extra config needed on modern Docker).
@@ -90,6 +98,7 @@ Use `manufapp.sh`, or the raw `docker compose` commands it wraps.
 ### manufapp.sh
 
 ```bash
+./manufapp.sh setup     # Ubuntu only - install Docker + AWS CLI v2 if missing
 ./manufapp.sh start     # aws ecr login, pull latest images, up -d, then show status
 ./manufapp.sh stop      # docker compose down
 ./manufapp.sh restart   # stop, then start

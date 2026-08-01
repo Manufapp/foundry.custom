@@ -15,6 +15,26 @@ containerized — it's expected to already be running on the host's bare metal.
 | `celery-beat` | `foundry.django` (ECR) | Scheduler (`django_celery_beat.schedulers:DatabaseScheduler`), same wait. |
 | `redis` | `redis:7-alpine` | Celery broker/result backend. |
 
+## Getting the code onto a server
+
+If this repo is public, no `git`/credentials are needed on the target server — a single
+command downloads and extracts it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Manufapp/foundry.custom/dev/install.sh | bash
+```
+
+That runs `install.sh` (in this repo), which pulls a tarball of the `dev` branch and
+extracts it into `./foundry.custom`. Override the branch/tag or target directory with
+`REF`/`DEST` env vars, e.g. `REF=v1.2.0 DEST=/opt/foundry.custom curl ... | bash`.
+
+If the repo is private instead, use `git clone` (needs a personal access token or a
+deploy key with read access) so you can `git pull` later for updates:
+
+```bash
+git clone https://github.com/Manufapp/foundry.custom.git
+```
+
 ## Prerequisites
 
 1. **Docker + Docker Compose** on the target host.
@@ -123,7 +143,28 @@ IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then st
 ./manufapp.sh status     # docker compose ps
 ./manufapp.sh logs [service...]   # follow logs — all services, or just the ones named
                                    # e.g. ./manufapp.sh logs django celery
+./manufapp.sh remove     # undo setup - see "Removing it" below
 ```
+
+### Removing it
+
+`./manufapp.sh remove` undoes what `setup`/`start` provisioned, most destructive last:
+
+1. Always: stops and removes this stack's containers, network, and volumes
+   (`docker compose down -v --remove-orphans`) — safe, `redis`'s volume is just
+   Celery broker/result state, nothing this app can't regenerate.
+2. Asks for confirmation, then (if confirmed) drops the `DB_NAME` database and
+   `DB_USER` role, and reverts the `listen_addresses`/`pg_hba.conf` changes made
+   for Docker connectivity — **this destroys real application data**, skipped by
+   default (including when run non-interactively, e.g. piped from `curl`, where
+   it can't prompt at all).
+3. Asks for confirmation, then (if confirmed) uninstalls Docker Engine, the
+   PostgreSQL server package, and AWS CLI v2, and clears this user's `~/.aws` —
+   skipped by default since these are host-wide and may be used by other things
+   on the same box.
+
+Each of steps 2 and 3 requires literally typing `yes` at its prompt — anything else
+(including no input at all) is treated as "no."
 
 ### Equivalent raw docker compose commands
 

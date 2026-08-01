@@ -9,6 +9,8 @@
 #   IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then start
 #   ./manufapp.sh status    # docker compose ps
 #   ./manufapp.sh logs [service...]   # follow logs, all services or the ones named
+#   ./manufapp.sh remove    # undo setup - tears down the stack, asks before touching
+#                           # Postgres data or uninstalling Docker/AWS CLI/Postgres itself
 #
 # IMAGE_TAG_FE/IMAGE_TAG_BE are required env vars for start/restart - passed on the
 # command line (not read from .env.server), so the image versions actually running
@@ -22,10 +24,19 @@ ENV_FILE=.env.server
 COMPOSE_FILE=docker-compose.server.yml
 
 usage() {
-  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]}" >&2
+  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]|remove}" >&2
   echo "  start/restart also need IMAGE_TAG_FE/IMAGE_TAG_BE set, e.g.:" >&2
   echo "  IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 $0 start" >&2
   exit 1
+}
+
+# Prompts for a literal "yes" and echoes back the answer (defaulting to "no" - including
+# on EOF, e.g. stdin isn't a terminal) - never treat "unanswered" as consent for a
+# destructive step.
+confirm() {
+  local prompt="$1" reply=""
+  read -r -p "$prompt [type 'yes' to confirm]: " reply || true
+  [ "$reply" = "yes" ]
 }
 
 cmd="${1:-}"
@@ -143,6 +154,85 @@ if [ "$cmd" = "setup" ]; then
   echo "Setup done. Next:"
   echo "  cp .env.server.example .env.server   # fill in real values"
   echo "  IMAGE_TAG_FE=<fe_tag> IMAGE_TAG_BE=<be_tag> ./manufapp.sh start"
+  exit 0
+fi
+
+if [ "$cmd" = "remove" ]; then
+  SUDO=""
+  if [ "$(id -u)" -ne 0 ]; then
+    SUDO="sudo"
+  fi
+
+  DB_NAME=$(get_env DB_NAME manufapp)
+  DB_USER=$(get_env DB_USER caretaker)
+
+  # Tears down what setup/start provisioned, most destructive last - each of the two
+  # steps that touch real data or host-wide packages asks for explicit confirmation
+  # first, since this repo has no way to know if Postgres/Docker/the AWS profile here
+  # are also used by anything else on this box.
+  if [ -f "$COMPOSE_FILE" ]; then
+    echo "Stopping and removing the docker-compose stack (containers, network, volumes)..."
+    if [ -f "$ENV_FILE" ]; then
+      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down -v --remove-orphans
+    else
+      docker compose -f "$COMPOSE_FILE" down -v --remove-orphans
+    fi
+  else
+    echo "$COMPOSE_FILE not found, skipping stack teardown."
+  fi
+
+  echo
+  if confirm "Drop the '$DB_NAME' database and '$DB_USER' role, and revert the pg_hba.conf/postgresql.conf changes setup/start made"; then
+    if command -v psql >/dev/null 2>&1; then
+      echo "Dropping database '$DB_NAME' and role '$DB_USER'..."
+      sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"${DB_NAME}\";" >/dev/null
+      sudo -u postgres psql -c "DROP ROLE IF EXISTS \"${DB_USER}\";" >/dev/null
+
+      PG_CONF_DIR=$(sudo -u postgres psql -tAc "SHOW config_file;" | xargs dirname)
+      PG_CONF="$PG_CONF_DIR/postgresql.conf"
+      PG_HBA="$PG_CONF_DIR/pg_hba.conf"
+
+      # sed -i rewrites the file, which drops root:root perms back to whatever the invoking
+      # user defaults to - Postgres (running as the postgres user) then can't read its own
+      # config. Preserve ownership/mode explicitly, same as ensure_local_postgres does.
+      for f in "$PG_CONF" "$PG_HBA"; do
+        owner=$($SUDO stat -c '%U:%G' "$f")
+        perms=$($SUDO stat -c '%a' "$f")
+        if [ "$f" = "$PG_CONF" ]; then
+          echo "Reverting listen_addresses to 'localhost' in $f..."
+          $SUDO sed -i -E "s/^\s*#?\s*listen_addresses\s*=.*/listen_addresses = 'localhost'/" "$f"
+        else
+          echo "Removing the docker-bridge access rule(s) added to $f..."
+          $SUDO sed -i -E '/172\.16\.0\.0\/12/d; /# manufapp docker-compose stack/d' "$f"
+        fi
+        $SUDO chown "$owner" "$f"
+        $SUDO chmod "$perms" "$f"
+      done
+
+      $SUDO systemctl restart postgresql
+    else
+      echo "psql not found, nothing to revert."
+    fi
+  else
+    echo "Skipping Postgres database/role/config removal."
+  fi
+
+  echo
+  if confirm "Uninstall Docker Engine, AWS CLI v2, and the PostgreSQL server package, and clear this user's ~/.aws credentials (affects the whole host, not just this app)"; then
+    echo "Uninstalling PostgreSQL server..."
+    $SUDO apt-get purge -y postgresql postgresql-contrib >/dev/null 2>&1 || true
+    echo "Uninstalling Docker Engine..."
+    $SUDO apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1 || true
+    echo "Uninstalling AWS CLI v2 and clearing ~/.aws..."
+    $SUDO rm -rf /usr/local/aws-cli /usr/local/bin/aws /usr/local/bin/aws_completer
+    rm -rf "${HOME:?}/.aws"
+    $SUDO apt-get autoremove -y >/dev/null 2>&1 || true
+  else
+    echo "Skipping Docker/AWS CLI/PostgreSQL package removal."
+  fi
+
+  echo
+  echo "Remove done."
   exit 0
 fi
 

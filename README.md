@@ -17,19 +17,24 @@ containerized — it's expected to already be running on the host's bare metal.
 
 ## Getting the code onto a server
 
-If this repo is public, no `git`/credentials are needed on the target server — a single
-command downloads and extracts it:
+This repo is public, so no `git`/credentials are needed on the target server — a single
+command downloads and extracts it, then you're straight into setup:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Manufapp/foundry.custom/dev/install.sh | bash
+cd foundry.custom
+cp .env.server.example .env.server   # fill in real values
+./manufapp.sh setup
+IMAGE_TAG_FE=<fe_tag> IMAGE_TAG_BE=<be_tag> ./manufapp.sh start
 ```
 
-That runs `install.sh` (in this repo), which pulls a tarball of the `dev` branch and
-extracts it into `./foundry.custom`. Override the branch/tag or target directory with
-`REF`/`DEST` env vars, e.g. `REF=v1.2.0 DEST=/opt/foundry.custom curl ... | bash`.
+The first line runs `install.sh` (in this repo), which pulls a tarball of the `dev`
+branch and extracts it into `./foundry.custom`. Override the branch/tag or target
+directory with `REF`/`DEST` env vars, e.g. `REF=v1.2.0 DEST=/opt/foundry.custom curl
+... | bash`.
 
-If the repo is private instead, use `git clone` (needs a personal access token or a
-deploy key with read access) so you can `git pull` later for updates:
+If you'd rather use `git` (e.g. to `git pull` updates later instead of re-running
+`install.sh`), that works too:
 
 ```bash
 git clone https://github.com/Manufapp/foundry.custom.git

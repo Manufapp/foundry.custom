@@ -18,7 +18,7 @@ name: manufapp
 #   docker compose --env-file .env.server -f docker-compose.server.yml up -d
 
 x-django-image: &django-image
-  image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.django:${IMAGE_TAG:-latest}
+  image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.django:${IMAGE_TAG_BE:-latest}
 
 x-django-env: &django-env
   ENV_NAME: ${ENV_NAME:-production}
@@ -110,7 +110,7 @@ services:
     command: ["celery", "-A", "foundry", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
 
   react:
-    image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.react:${IMAGE_TAG:-latest}
+    image: ${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com/foundry.react:${IMAGE_TAG_FE:-latest}
     container_name: manufapp-react
     restart: unless-stopped
     environment:
@@ -121,6 +121,18 @@ services:
     depends_on:
       - django
     command: ["npm", "start"]
+
+  nginx:
+    image: nginx:alpine
+    container_name: manufapp-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - react
+      - django
 
 volumes:
   redis_data:

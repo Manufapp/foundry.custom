@@ -151,8 +151,16 @@ IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then st
 ./manufapp.sh status     # docker compose ps
 ./manufapp.sh logs [service...]   # follow logs — all services, or just the ones named
                                    # e.g. ./manufapp.sh logs django celery
+./manufapp.sh record-version   # record the running BE/FE versions (start does this itself)
 ./manufapp.sh remove     # undo setup - see "Removing it" below
 ```
+
+`start` records the running BE/FE image versions and deploy time in Firestore
+`platform_versions/<SERVER_NAME>`. That feeds the in-app App Versions drawer and the infra
+"Deployed versions" page (`infra/server-control` in the foundry superproject), which lists every
+server in one place. Set `SERVER_NAME` (e.g. `ambrane`) in `.env.server` once per box. If you
+deploy with raw `docker compose ... up -d` instead of `start`, run `./manufapp.sh record-version`
+afterwards.
 
 ### Removing it
 

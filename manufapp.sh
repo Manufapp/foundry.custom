@@ -8,6 +8,8 @@
 #   ./manufapp.sh stop      # down
 #   IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then start
 #   ./manufapp.sh status    # docker compose ps
+#   ./manufapp.sh record-version   # re-record running versions for the infra versions page
+#                                  # (start does this itself; use after a manual `compose up`)
 #   ./manufapp.sh logs [service...]   # follow logs, all services or the ones named
 #   ./manufapp.sh remove    # undo setup - tears down the stack, asks before touching
 #                           # Postgres data or uninstalling Docker/AWS CLI/Postgres itself
@@ -24,7 +26,7 @@ ENV_FILE=.env.server
 COMPOSE_FILE=docker-compose.server.yml
 
 usage() {
-  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]|remove}" >&2
+  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]|record-version|remove}" >&2
   echo "  start/restart also need IMAGE_TAG_FE/IMAGE_TAG_BE set, e.g.:" >&2
   echo "  IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 $0 start" >&2
   exit 1
@@ -373,6 +375,29 @@ print_access_urls() {
   echo "  (or any hostname/DNS record you've pointed at this server)"
 }
 
+# Records the running BE/FE image versions in Firestore platform_versions/$SERVER_NAME, which
+# the infra "Deployed versions" page lists next to every cloud server (this box can't be
+# polled from outside). The writer runs inside the django container, which already carries
+# the Firebase key - so nothing extra is needed on this host. Re-recording an unchanged
+# version is a no-op, so this is safe after any start/restart or a manual `compose up`.
+record_version() {
+  local server be fe service version
+  server=$(get_env SERVER_NAME "")
+  if [ -z "$server" ]; then
+    echo "SERVER_NAME is not set in $ENV_FILE - skipping version record for the infra versions page."
+    return 0
+  fi
+  be=$(docker inspect -f '{{.Config.Image}}' manufapp-django 2>/dev/null | sed 's/.*://')
+  fe=$(docker inspect -f '{{.Config.Image}}' manufapp-react 2>/dev/null | sed 's/.*://')
+  for service in be fe; do
+    if [ "$service" = be ]; then version=$be; else version=$fe; fi
+    [ -n "$version" ] || { echo "WARN: no running $service container - not recording its version."; continue; }
+    docker exec -e DEPLOY_PLATFORM=onprem -e DEPLOYED_BY="${SUDO_USER:-${USER:-}}" manufapp-django \
+      python scripts/write_firebase_version.py "$service" "$version" "$server" \
+      || echo "WARN: could not record $service=$version in Firestore - the deploy itself is fine."
+  done
+}
+
 case "$cmd" in
   start)
     if [ -z "${IMAGE_TAG_FE:-}" ] || [ -z "${IMAGE_TAG_BE:-}" ]; then
@@ -386,7 +411,11 @@ case "$cmd" in
     "${COMPOSE[@]}" pull
     "${COMPOSE[@]}" up -d
     "${COMPOSE[@]}" ps
+    record_version
     print_access_urls
+    ;;
+  record-version)
+    record_version
     ;;
   stop)
     "${COMPOSE[@]}" down

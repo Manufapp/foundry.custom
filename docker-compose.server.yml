@@ -32,6 +32,9 @@ x-django-env: &django-env
   DB_USER: ${DB_USER:-caretaker}
   DB_PASSWORD: ${DB_PASSWORD}
   DB_PORT: ${DB_PORT:-5432}
+  # This server's id in Firestore platform_versions (e.g. ambrane, atc) - the in-app App
+  # Versions drawer reads it, and manufapp.sh records deploys under it.
+  SERVER_NAME: ${SERVER_NAME:-}
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/0
   PYTHONUNBUFFERED: 1

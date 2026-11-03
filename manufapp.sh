@@ -41,6 +41,7 @@ confirm() {
   [ "$reply" = "yes" ]
 }
 
+ORIG_ARGS=("$@")
 cmd="${1:-}"
 shift || true
 
@@ -82,6 +83,17 @@ if [ "$cmd" = "setup" ]; then
     $SUDO apt-get update
     $SUDO apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     $SUDO systemctl enable --now docker
+  fi
+
+  # Add the current user to the docker group so they don't need sudo for docker commands.
+  # Group membership takes effect on next login; subsequent ./manufapp.sh calls re-exec
+  # automatically under the group without requiring a logout (see ensure_docker_access).
+  if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    echo "$USER already in docker group, skipping."
+  else
+    echo "Adding $USER to the docker group..."
+    $SUDO usermod -aG docker "$USER"
+    echo "  (membership active on next login — ./manufapp.sh start will handle this automatically)"
   fi
 
   if command -v aws >/dev/null 2>&1; then
@@ -358,19 +370,24 @@ ensure_local_postgres() {
   $PG_PSQL -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" >/dev/null
 }
 
-# nginx is the single entry point (port 80, see README "Why nginx") - print what to
-# actually type into a browser instead of leaving that as a guess after `up -d`.
+# nginx is the single entry point (see README "Why nginx") - print what to actually
+# type into a browser instead of leaving that as a guess after `up -d`.
 print_access_urls() {
+  local port
+  port=$(get_env NGINX_PORT 80)
+  local port_suffix=""
+  [ "$port" != "80" ] && port_suffix=":$port"
+
   echo
-  echo "App is served through nginx on port 80. Access it at:"
+  echo "App is served through nginx on port ${port}. Access it at:"
   local local_ip public_ip
   local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-  [ -n "$local_ip" ] && echo "  http://$local_ip   (same network/VPN as this server)"
+  [ -n "$local_ip" ] && echo "  http://${local_ip}${port_suffix}   (same network/VPN as this server)"
   # Best-effort only - times out fast and is silently skipped if this box has no
   # internet egress or the lookup service is unreachable.
   public_ip=$(curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || true)
   if [ -n "$public_ip" ] && [ "$public_ip" != "$local_ip" ]; then
-    echo "  http://$public_ip   (public internet - only reachable if this host's firewall/router forwards port 80 to it)"
+    echo "  http://${public_ip}${port_suffix}   (public internet - only reachable if this host's firewall/router forwards port ${port} to it)"
   fi
   echo "  (or any hostname/DNS record you've pointed at this server)"
 }
@@ -398,6 +415,52 @@ record_version() {
   done
 }
 
+# If the Docker socket is inaccessible (e.g., this session predates docker group
+# membership added by setup), add the user to the group if needed and re-exec
+# under it — no logout required.
+ensure_docker_access() {
+  docker info >/dev/null 2>&1 && return 0
+
+  if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    echo "Adding $USER to the docker group..."
+    sudo usermod -aG docker "$USER"
+  fi
+
+  if command -v sg >/dev/null 2>&1; then
+    echo "Re-launching under the docker group (no logout needed)..."
+    exec sg docker -c "$(printf '%q ' "$BASH_SOURCE" "${ORIG_ARGS[@]}")"
+  elif command -v sudo >/dev/null 2>&1; then
+    echo "Re-launching via sudo to reach the Docker socket..."
+    exec sudo -E -g docker -- "$BASH_SOURCE" "${ORIG_ARGS[@]}"
+  else
+    echo "Cannot reach the Docker socket." >&2
+    echo "  Run: sudo usermod -aG docker \$USER  then log out and back in." >&2
+    exit 1
+  fi
+}
+
+# Export AWS credential vars from .env.server into the shell environment so the aws
+# CLI picks them up directly. docker compose receives the file via --env-file, but
+# aws commands the script calls itself do not. Only sets vars not already present in
+# the environment (explicit env-var overrides on the command line still win).
+load_aws_env() {
+  for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_PROFILE; do
+    local val
+    val=$(get_env "$var" "")
+    if [ -n "$val" ] && [ -z "${!var:-}" ]; then
+      export "$var=$val"
+    fi
+  done
+  # AWS CLI uses AWS_DEFAULT_REGION; .env.server stores it as AWS_REGION.
+  if [ -z "${AWS_DEFAULT_REGION:-}" ]; then
+    local region
+    region=$(get_env AWS_REGION "")
+    [ -n "$region" ] && export AWS_DEFAULT_REGION="$region"
+  fi
+}
+
+ensure_docker_access
+
 case "$cmd" in
   start)
     if [ -z "${IMAGE_TAG_FE:-}" ] || [ -z "${IMAGE_TAG_BE:-}" ]; then
@@ -405,6 +468,7 @@ case "$cmd" in
       echo "  IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 $0 start" >&2
       exit 1
     fi
+    load_aws_env
     ensure_local_postgres
     aws ecr get-login-password --region "${AWS_REGION:-ap-south-1}" \
       | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com"

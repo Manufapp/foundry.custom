@@ -1,5 +1,2 @@
 .env.server
 env.server
-restore-work/
-backups/
-__pycache__/

@@ -165,51 +165,50 @@ afterwards.
 
 ### Restoring a company dump
 
-`restore_dump.sh` (also `./manufapp.sh restore ...`) replaces this server's database
-with a dump made by foundry.django's `company_dump.sh`, fetched from Google Drive:
+`restore_dump.sh` is one self-contained script that loads a company dump (made by
+foundry.django's `company_dump.sh`) from Google Drive into the database of the server
+you're logged in to. The app must already be deployed and running: it doesn't deploy,
+build or migrate anything. It replaces the data in the existing database, using the
+schema the running backend created, and reads the DB credentials from the running
+`manufapp-django` container, so it works from any folder.
 
-1. Upload the dump to Google Drive (plain `.sql`, or `.sql.gz` / `.zip` to make it
-   smaller). Share → General access → **Anyone with the link** (Viewer), copy the link.
-2. On the server, from this folder:
+1. Upload the dump to Google Drive (`.sql`, or `.sql.gz` / `.zip` to make it smaller).
+   Share → General access → **Anyone with the link** (Viewer), copy the link.
+2. On the server, either paste the link into `DRIVE_LINK` at the top of the script and run
+   it with no arguments, or pass the link:
    ```bash
+   ./restore_dump.sh                      # uses DRIVE_LINK from the top of the script
    ./restore_dump.sh 'https://drive.google.com/file/d/<id>/view?usp=sharing'
+   ./manufapp.sh restore '<link>'         # same thing through the wrapper
    ```
    It shows the companies in the dump and what the DB holds now, and only continues
-   after you type `yes`.
+   after you type `yes`. Keep `DRIVE_LINK` as the placeholder in this repo — it's public.
 3. Turn link sharing off again; the dump holds customer data.
 
-The dump itself comes from `company_dump.sh` in foundry.django (`gc-uat` branch has the
-current version), e.g. `ENV_NAME=prod ./company_dump.sh 2` — see the examples at the top
-of `restore_dump.sh` (`./restore_dump.sh --help`) for the whole sequence.
-
-On a server installed before this script existed, fetch just the new files instead of
-re-running `install.sh` (which would overwrite local edits to the compose file/nginx):
-```bash
-B=https://raw.githubusercontent.com/Manufapp/foundry.custom/dev
-mkdir -p restore
-curl -fsSL $B/restore_dump.sh           -o restore_dump.sh && chmod +x restore_dump.sh
-curl -fsSL $B/restore/prepare_dump.py   -o restore/prepare_dump.py
-curl -fsSL $B/restore/field_defaults.py -o restore/field_defaults.py
-```
-
 What it does: downloads and checks the dump is complete, backs up the current DB to
-`backups/pre_restore_<db>_<time>.dump`, stops `django`/`celery`/`celery-beat`, recreates
-the `public` schema (+ `pg_trgm`), runs `migrate` with the BE image the stack runs (or
-`IMAGE_TAG_BE=...` if set), loads the dump through `restore/prepare_dump.py` (drops
-columns this image doesn't have, fills columns newer than the dump with model defaults,
-applies the dump's tag/user fix-up footer, resets sequences), checks every table's row
-count against the dump, then starts the app again and restarts nginx. DB credentials
-come from `.env.server`. A fresh migrate can take 20–30 minutes.
+`~/manufapp-restore/backups/`, reads model field defaults from the running backend,
+stops `celery-beat`/`celery`/`django` for the load (about a minute), empties the data
+tables and loads the dump fitted to the deployed schema (drops columns this backend
+doesn't have, fills columns newer than the dump with model defaults, applies the dump's
+tag/user fix-up footer, resets sequences), checks every table's row count against the
+dump, then starts the containers again and restarts nginx.
 
 | Option | |
 |---|---|
-| `/path/to/dump.sql[.gz\|.zip]` | use a local file instead of a Drive link |
+| `/path/to/dump.sql[.gz\|.zip]` | use a file already on the server instead of a Drive link |
 | `--yes` | don't prompt |
 | `--no-backup` | skip the pre-restore backup |
-| `--keep-files` | keep the downloaded/prepared dump in `restore-work/` |
-| `--rollback backups/pre_restore_....dump` | put the backed-up database back |
+| `--keep-files` | keep the downloaded/prepared dump in `~/manufapp-restore/work/` |
+| `--rollback ~/manufapp-restore/backups/pre_restore_....dump` | put the backed-up database back |
 
-Logs from the last run are in `restore-work/` (`migrate.log`, `prepare.log`,
+`./restore_dump.sh --help` shows the whole sequence with examples, including the
+`company_dump.sh` step (foundry.django, `gc-uat` branch). On a server installed before
+this script existed, fetch just this file instead of re-running `install.sh`:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Manufapp/foundry.custom/dev/restore_dump.sh -o restore_dump.sh && chmod +x restore_dump.sh
+```
+
+Logs from the last run are in `~/manufapp-restore/work/` (`prepare.log`,
 `import_errors.log`). A table listed as a row-count mismatch at the end failed to load
 as a whole; its error is in `import_errors.log`.
 

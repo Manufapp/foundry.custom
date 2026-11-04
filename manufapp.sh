@@ -11,6 +11,8 @@
 #   ./manufapp.sh record-version   # re-record running versions for the infra versions page
 #                                  # (start does this itself; use after a manual `compose up`)
 #   ./manufapp.sh logs [service...]   # follow logs, all services or the ones named
+#   ./manufapp.sh restore <drive-link|file> [--yes|--no-backup|--keep-files]
+#                           # replace the DB with a company_dump.sh dump - see restore_dump.sh
 #   ./manufapp.sh remove    # undo setup - tears down the stack, asks before touching
 #                           # Postgres data or uninstalling Docker/AWS CLI/Postgres itself
 #
@@ -26,7 +28,7 @@ ENV_FILE=.env.server
 COMPOSE_FILE=docker-compose.server.yml
 
 usage() {
-  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]|record-version|remove}" >&2
+  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]|record-version|restore <drive-link|file>|remove}" >&2
   echo "  start/restart also need IMAGE_TAG_FE/IMAGE_TAG_BE set, e.g.:" >&2
   echo "  IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 $0 start" >&2
   exit 1
@@ -493,6 +495,9 @@ case "$cmd" in
     ;;
   logs)
     "${COMPOSE[@]}" logs -f --tail 200 "$@"
+    ;;
+  restore)
+    exec ./restore_dump.sh "$@"
     ;;
   *)
     usage

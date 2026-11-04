@@ -82,6 +82,7 @@ usage() {
 }
 
 # ── Args ──────────────────────────────────────────────────────────────────────
+ORIG_ARGS=("$@")
 SOURCE=""; ROLLBACK=""; ASSUME_YES=0; DO_BACKUP=1; KEEP_FILES=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -134,6 +135,21 @@ COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' not found - $2"; }
 need docker   "install Docker first (./manufapp.sh setup)"
+
+# Same as manufapp.sh's ensure_docker_access: a session that predates the user's docker
+# group membership (added by ./manufapp.sh setup) can't reach the socket - re-run this
+# script under the group instead of failing halfway or needing a logout.
+if ! docker info >/dev/null 2>&1; then
+  if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker && command -v sg >/dev/null 2>&1; then
+    log "Re-launching under the docker group (no logout needed) ..."
+    exec sg docker -c "$(printf '%q ' "$HERE/restore_dump.sh" "${ORIG_ARGS[@]}")"
+  elif command -v sudo >/dev/null 2>&1; then
+    log "Re-launching via sudo to reach the Docker socket ..."
+    exec sudo -E -g docker -- "$HERE/restore_dump.sh" "${ORIG_ARGS[@]}"
+  fi
+  die "can't reach the Docker socket - run: sudo usermod -aG docker \$USER, then log out and back in"
+fi
+
 need psql     "install the PostgreSQL client (apt install postgresql-client)"
 need python3  "install python3"
 need curl     "install curl"
@@ -169,6 +185,14 @@ ensure_be_image() {
   docker image inspect "$BE_IMAGE" >/dev/null 2>&1 && return 0
   log "Pulling $BE_IMAGE ..."
   need aws "install AWS CLI v2 (./manufapp.sh setup) to pull from ECR"
+  # Like manufapp.sh's load_aws_env: keys kept in .env.server are used for the ECR login
+  # too (compose gets them via --env-file, the aws CLI here doesn't). Env vars still win.
+  local var val
+  for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_PROFILE; do
+    val=$(get_env "$var" "")
+    if [ -n "$val" ] && [ -z "${!var:-}" ]; then export "$var=$val"; fi
+  done
+  export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
   aws ecr get-login-password --region "$AWS_REGION" \
     | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >/dev/null
   "${COMPOSE[@]}" pull django

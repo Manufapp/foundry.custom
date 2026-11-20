@@ -6,7 +6,12 @@
 #   ./manufapp.sh setup     # Ubuntu only - install/configure Docker, AWS CLI v2 + credentials, Postgres
 #   IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh start     # aws ecr login, pull those image tags, up -d
 #   ./manufapp.sh stop      # down
-#   IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # stop, then start
+#   IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 ./manufapp.sh restart   # full stop + start (requires both tags)
+#   ./manufapp.sh restart react [django] [celery] [celery-beat] [nginx] [redis]
+#                           # restart one or more named services without touching the others
+#                           # services: react  django  celery  celery-beat  nginx  redis
+#                           # if IMAGE_TAG_FE is set when restarting react, pulls the new image first
+#                           # if IMAGE_TAG_BE is set when restarting django/celery/celery-beat, pulls first
 #   ./manufapp.sh status    # docker compose ps
 #   ./manufapp.sh record-version   # re-record running versions for the infra versions page
 #                                  # (start does this itself; use after a manual `compose up`)
@@ -16,7 +21,7 @@
 #   ./manufapp.sh remove    # undo setup - tears down the stack, asks before touching
 #                           # Postgres data or uninstalling Docker/AWS CLI/Postgres itself
 #
-# IMAGE_TAG_FE/IMAGE_TAG_BE are required env vars for start/restart - passed on the
+# IMAGE_TAG_FE/IMAGE_TAG_BE are required env vars for start and full restart - passed on the
 # command line (not read from .env.server), so the image versions actually running
 # are always an explicit, visible part of the command.
 
@@ -28,9 +33,11 @@ ENV_FILE=.env.server
 COMPOSE_FILE=docker-compose.server.yml
 
 usage() {
-  echo "Usage: $0 {setup|start|stop|restart|status|logs [service...]|record-version|restore <drive-link|file>|remove}" >&2
-  echo "  start/restart also need IMAGE_TAG_FE/IMAGE_TAG_BE set, e.g.:" >&2
+  echo "Usage: $0 {setup|start|stop|restart [service...]|status|logs [service...]|record-version|restore <drive-link|file>|remove}" >&2
+  echo "  start/full restart need IMAGE_TAG_FE/IMAGE_TAG_BE set, e.g.:" >&2
   echo "  IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 $0 start" >&2
+  echo "  Services for partial restart: react  django  celery  celery-beat  nginx  redis" >&2
+  echo "  e.g.: $0 restart react django" >&2
   exit 1
 }
 
@@ -487,8 +494,58 @@ case "$cmd" in
     "${COMPOSE[@]}" down
     ;;
   restart)
-    "${COMPOSE[@]}" down
-    "$0" start
+    if [ $# -eq 0 ]; then
+      # Full restart — same behaviour as before, requires both image tags.
+      if [ -z "${IMAGE_TAG_FE:-}" ] || [ -z "${IMAGE_TAG_BE:-}" ]; then
+        echo "Full restart requires IMAGE_TAG_FE and IMAGE_TAG_BE, e.g.:" >&2
+        echo "  IMAGE_TAG_FE=1.39.0 IMAGE_TAG_BE=v1.39.0 $0 restart" >&2
+        exit 1
+      fi
+      "${COMPOSE[@]}" down
+      exec "$0" start
+    fi
+
+    # Selective restart — one or more named services.
+    # Valid services: react  django  celery  celery-beat  nginx  redis
+    # Pull a new image first when the relevant tag env var is set for that service.
+    for svc in "$@"; do
+      case "$svc" in
+        react|django|celery|celery-beat|nginx|redis) ;;
+        *) echo "Unknown service '$svc'. Valid: react  django  celery  celery-beat  nginx  redis" >&2; exit 1 ;;
+      esac
+    done
+
+    # Determine whether we need an ECR pull for any of the requested services.
+    need_pull_fe=0
+    need_pull_be=0
+    for svc in "$@"; do
+      [ "$svc" = "react" ] && [ -n "${IMAGE_TAG_FE:-}" ] && need_pull_fe=1
+      { [ "$svc" = "django" ] || [ "$svc" = "celery" ] || [ "$svc" = "celery-beat" ]; } \
+        && [ -n "${IMAGE_TAG_BE:-}" ] && need_pull_be=1
+    done
+
+    if [ "$need_pull_fe" = "1" ] || [ "$need_pull_be" = "1" ]; then
+      load_aws_env
+      aws ecr get-login-password --region "${AWS_REGION:-ap-south-1}" \
+        | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID:-002429227764}.dkr.ecr.${AWS_REGION:-ap-south-1}.amazonaws.com"
+    fi
+
+    for svc in "$@"; do
+      pull_this=0
+      { [ "$svc" = "react" ] && [ "$need_pull_fe" = "1" ]; } && pull_this=1
+      { [ "$svc" = "django" ] || [ "$svc" = "celery" ] || [ "$svc" = "celery-beat" ]; } \
+        && [ "$need_pull_be" = "1" ] && pull_this=1
+
+      if [ "$pull_this" = "1" ]; then
+        echo "Pulling new image for $svc..."
+        "${COMPOSE[@]}" pull "$svc"
+        "${COMPOSE[@]}" up -d --no-deps "$svc"
+      else
+        echo "Restarting $svc..."
+        "${COMPOSE[@]}" restart "$svc"
+      fi
+    done
+    "${COMPOSE[@]}" ps
     ;;
   status)
     "${COMPOSE[@]}" ps

@@ -31,6 +31,10 @@ pipeline {
         string(name: 'BE_VERSION', defaultValue: '', trim: true, description: 'Backend image tag, e.g. v1.39.0')
     }
 
+    environment {
+        AWS_PROFILE = 'manufapp'
+    }
+
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
         disableConcurrentBuilds()
@@ -60,16 +64,13 @@ pipeline {
                 script {
                     def cfg = CUSTOMERS[params.CUSTOMER]
                     sshagent(credentials: [cfg.credId]) {
-                        // Heredoc over stdin: no quoting issues, and `set -e` aborts on failure.
-                        // manufapp.sh start pulls the new images (ECR login + compose pull).
+                        // Single command argument with stdin closed (-n): feeding the script over
+                        // stdin let `docker compose` in `stop` swallow the rest of it, so `start`
+                        // never ran. manufapp.sh start pulls the new images (ECR login + compose pull).
                         sh """
-                            ssh -p ${cfg.port} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 \
-                                ${cfg.user}@${cfg.host} 'bash -s' <<'REMOTE'
-set -euo pipefail
-cd ${cfg.dir}
-./manufapp.sh stop
-IMAGE_TAG_FE=${params.FE_VERSION} IMAGE_TAG_BE=${params.BE_VERSION} ./manufapp.sh start
-REMOTE
+                            ssh -n -p ${cfg.port} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 \
+                                ${cfg.user}@${cfg.host} \
+                                'set -e; cd ${cfg.dir} && ./manufapp.sh stop && IMAGE_TAG_FE=${params.FE_VERSION} IMAGE_TAG_BE=${params.BE_VERSION} ./manufapp.sh start'
                         """
                     }
                 }
@@ -82,7 +83,7 @@ REMOTE
                     def cfg = CUSTOMERS[params.CUSTOMER]
                     sshagent(credentials: [cfg.credId]) {
                         sh """
-                            ssh -p ${cfg.port} -o StrictHostKeyChecking=accept-new \
+                            ssh -n -p ${cfg.port} -o StrictHostKeyChecking=accept-new \
                                 ${cfg.user}@${cfg.host} 'cd ${cfg.dir} && ./manufapp.sh status'
                         """
                     }

@@ -303,6 +303,15 @@ ensure_local_postgres() {
   # SUDO prefix above - needed even when we're already root, since the target user differs.
   local PG_PSQL="sudo -u postgres psql"
 
+  # Non-interactive runs (e.g. the Jenkins deploy job over ssh, no TTY) can't answer a sudo
+  # password prompt, and under pipefail the `sudo find` below would abort the whole start
+  # silently. This provisioning is idempotent setup that's already done on an existing
+  # server, so skip it rather than fail; run `./manufapp.sh start` interactively to apply it.
+  if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
+    echo "sudo needs a password (non-interactive) - skipping local Postgres provisioning." >&2
+    return 0
+  fi
+
   local pg_conf pg_hba
   pg_conf=$($SUDO find /etc/postgresql -maxdepth 3 -name postgresql.conf 2>/dev/null | sort -V | tail -1)
   if [ -z "$pg_conf" ]; then

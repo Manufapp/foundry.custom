@@ -35,6 +35,9 @@ x-django-env: &django-env
   # This server's id in Firestore platform_versions (e.g. ambrane, atc) - the in-app App
   # Versions drawer reads it, and manufapp.sh records deploys under it.
   SERVER_NAME: ${SERVER_NAME:-}
+  # AI agents service endpoints - blank falls back to foundry/settings.py defaults.
+  AI_API_URL: ${AI_API_URL:-}
+  AI_WS_URL: ${AI_WS_URL:-}
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/0
   PYTHONUNBUFFERED: 1

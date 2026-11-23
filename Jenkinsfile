@@ -9,11 +9,11 @@
 // TODO: fill in real values per customer before the first run.
 def CUSTOMERS = [
     atc: [
-        host: 'TODO-atc-host', port: '22', user: 'TODO', dir: '/home/TODO/foundry.custom',
+        host: 'TODO-atc-host', port: '22', user: 'TODO', dir: '~/foundry.custom',
         credId: 'onprem-atc-ssh'
     ],
     ambrane: [
-        host: 'TODO-ambrane-host', port: '22', user: 'TODO', dir: '/home/TODO/foundry.custom',
+        host: 'TODO-ambrane-host', port: '22', user: 'TODO', dir: '~/foundry.custom',
         credId: 'onprem-ambrane-ssh'
     ],
     salasar: [
@@ -26,7 +26,7 @@ pipeline {
     agent any
 
     parameters {
-        choice(name: 'CUSTOMER', choices: ['atc', 'ambrane', 'salasar'], description: 'On-prem customer to deploy to')
+        choice(name: 'CUSTOMER', choices: ['salasar'], description: 'On-prem customer to deploy to (atc/ambrane to be re-enabled once ready)')
         string(name: 'FE_VERSION', defaultValue: '', trim: true, description: 'Frontend image tag, e.g. 1.39.0')
         string(name: 'BE_VERSION', defaultValue: '', trim: true, description: 'Backend image tag, e.g. v1.39.0')
     }
